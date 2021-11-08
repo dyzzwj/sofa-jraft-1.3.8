@@ -1327,6 +1327,7 @@ public class Replicator implements ThreadId.OnError {
                 try {
                     switch (queuedPipelinedResponse.requestType) {
                         case AppendEntries:
+                            // leader 当log复制成功后，调用投票箱的commitAt方法继续投票。
                             continueSendEntries = onAppendEntriesReturned(id, inflight, queuedPipelinedResponse.status,
                                 (AppendEntriesRequest) queuedPipelinedResponse.request,
                                 (AppendEntriesResponse) queuedPipelinedResponse.response, rpcSendTime, startTimeMs, r);
@@ -1338,6 +1339,7 @@ public class Replicator implements ThreadId.OnError {
                             break;
                     }
                 } finally {
+                    // 继续日志同步
                     if (continueSendEntries) {
                         // Success, increase the response sequence.
                         r.getAndIncrementRequiredNextSeq();
@@ -1497,6 +1499,7 @@ public class Replicator implements ThreadId.OnError {
         if (entriesSize > 0) {
             if (r.options.getReplicatorType().isFollower()) {
                 // Only commit index when the response is from follower.
+                // leader继续调用投票箱的commitAt方法
                 r.options.getBallotBox().commitAt(r.nextIndex, r.nextIndex + entriesSize - 1, r.options.getPeerId());
             }
             if (LOG.isDebugEnabled()) {
@@ -1594,6 +1597,7 @@ public class Replicator implements ThreadId.OnError {
      */
     private boolean sendEntries(final long nextSendingIndex) {
         final AppendEntriesRequest.Builder rb = AppendEntriesRequest.newBuilder();
+        // 设置AppendEntriesRequest请求参数
         if (!fillCommonFields(rb, nextSendingIndex - 1, false)) {
             // unlock id in installSnapshot
             installSnapshot();
@@ -1605,12 +1609,14 @@ public class Replicator implements ThreadId.OnError {
         final RecyclableByteBufferList byteBufList = RecyclableByteBufferList.newInstance();
         try {
             for (int i = 0; i < maxEntriesSize; i++) {
+                // 设置log的元数据 任期、类型、数据报文长度
                 final RaftOutter.EntryMeta.Builder emb = RaftOutter.EntryMeta.newBuilder();
                 if (!prepareEntry(nextSendingIndex, i, emb, byteBufList)) {
                     break;
                 }
                 rb.addEntries(emb.build());
             }
+            // 如果本次请求参数，没有日志需要同步，等待
             if (rb.getEntriesCount() == 0) {
                 if (nextSendingIndex < this.options.getLogManager().getFirstLogIndex()) {
                     installSnapshot();
@@ -1653,12 +1659,14 @@ public class Replicator implements ThreadId.OnError {
         this.appendEntriesCounter++;
         Future<Message> rpcFuture = null;
         try {
+            // 发送appendEntries请求给follower
             rpcFuture = this.rpcService.appendEntries(this.options.getPeerId().getEndpoint(), request, -1,
                 new RpcResponseClosureAdapter<AppendEntriesResponse>() {
 
                     @Override
                     public void run(final Status status) {
                         RecycleUtil.recycle(recyclable); // TODO: recycle on send success, not response received.
+                        // 处理follower响应
                         onRpcReturned(Replicator.this.id, RequestType.AppendEntries, status, request, getResponse(),
                             seq, v, monotonicSendTimeMs);
                     }

@@ -56,8 +56,10 @@ public class ReadIndexRequestProcessor extends NodeRequestProcessor<ReadIndexReq
             @Override
             public void run(final Status status) {
                 if (getResponse() != null) {
+                    // 1. 如果response不为null，响应客户端成功
                     done.sendResponse(getResponse());
                 } else {
+                    // 2. 如果response是null，返回原始status
                     done.run(status);
                 }
             }

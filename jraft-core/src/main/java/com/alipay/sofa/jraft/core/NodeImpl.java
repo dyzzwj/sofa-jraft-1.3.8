@@ -1345,6 +1345,7 @@ public class NodeImpl implements Node, RaftServerService {
         @Override
         public void run(final Status status) {
             if (status.isOk()) {
+                //BallotBox投票箱的commitAt方法提交，commitAt方法需要等到quorum节点提交后，才会处理后续步骤，后面再看
                 NodeImpl.this.ballotBox.commitAt(this.firstLogIndex, this.firstLogIndex + this.nEntries - 1,
                     NodeImpl.this.serverId);
             } else {
@@ -1357,7 +1358,8 @@ public class NodeImpl implements Node, RaftServerService {
     /**
      * 1、校验当前节点是否是Leader
      * 2、校验task的期望任期
-     * 3、把日志复制的信息放入投票箱BallotBox，注意这里把done0放进去了，BallotBox里会有个List存储这些需要回调的用户Closure，后期会放入用户StateMachine#onApply方法的入参Iterator里，让用户执行回调
+     * 3、把日志复制的信息放入投票箱BallotBox，注意这里把done0放进去了，BallotBox里会有个List存储这些需要回调的用户Closure，
+     * 后期会放入用户StateMachine#onApply方法的入参Iterator里，让用户执行回调
      * 4、最后，将日志交给LogManager处理，封装第二个Closure---LeaderStableClosure
      */
     private void executeApplyingTasks(final List<LogEntryAndClosure> tasks) {
@@ -1396,6 +1398,7 @@ public class NodeImpl implements Node, RaftServerService {
                     }
                     continue;
                 }
+                // 3. 日志复制前的信息，保存到ballotBox里的队列
                 if (!this.ballotBox.appendPendingTask(this.conf.getConf(),
                     this.conf.isStable() ? null : this.conf.getOldConf(), task.done)) {
                     Utils.runClosureInThread(task.done, new Status(RaftError.EINTERNAL, "Fail to append task."));
@@ -1408,6 +1411,7 @@ public class NodeImpl implements Node, RaftServerService {
                 entries.add(task.entry);
                 task.reset();
             }
+            // 4. 把LogEntry交给LogManStableClosureEventager管理，传入了一个LeaderStableClosure
             this.logManager.appendEntries(entries, new LeaderStableClosure(entries));
             // update conf.first
             checkAndSetConfiguration(true);
@@ -1471,8 +1475,16 @@ public class NodeImpl implements Node, RaftServerService {
             this.isDone = false;
         }
 
+
         @Override
         public synchronized void run(final Status status) {
+            /**
+             * ReadIndexResponseClosure是第三个回调，这是段公用逻辑，无论当前节点是leader还是follower，当ReadIndex处理完毕，都会调用这个方法。
+             * 这里会判断如果readIndex达到applyIndex，即可响应第二个回调；如果readIndex未达到applyIndex，会放入一个等待队列，
+             * 等到日志复制到readIndex了才会执行第二个回调。这里第二个回调就是用户代码传入NodeImpl#readIndex方法的回调ReadIndexClosure。
+             * 此时用户即可从状态机中读取value返回了
+             */
+
             if (this.isDone) {
                 return;
             }
@@ -1504,11 +1516,15 @@ public class NodeImpl implements Node, RaftServerService {
         final long startMs = Utils.monotonicMs();
         this.readLock.lock();
         try {
+            //NodeImpl根据当前节点状态，做不同的处理，如果当前节点是leader，走readLeader；如果当前节点是follower，走readFollower，两边逻辑不同
             switch (this.state) {
                 case STATE_LEADER:
+                    //leader节点的逻辑
                     readLeader(request, ReadIndexResponse.newBuilder(), done);
+
                     break;
                 case STATE_FOLLOWER:
+                    //follower节点的逻辑 follower发送ReadIndexRequest给leader
                     readFollower(request, done);
                     break;
                 case STATE_TRANSFERRING:
@@ -1549,7 +1565,9 @@ public class NodeImpl implements Node, RaftServerService {
     private void readLeader(final ReadIndexRequest request, final ReadIndexResponse.Builder respBuilder,
                             final RpcResponseClosure<ReadIndexResponse> closure) {
         final int quorum = getQuorum();
+        // 如果只有一个节点，直接响应成功
         if (quorum <= 1) {
+
             // Only one peer, fast path.
             respBuilder.setSuccess(true) //
                 .setIndex(this.ballotBox.getLastCommittedIndex());
@@ -1559,6 +1577,7 @@ public class NodeImpl implements Node, RaftServerService {
         }
 
         final long lastCommittedIndex = this.ballotBox.getLastCommittedIndex();
+        // 如果leader在自己任期内没有提交任何log，拒绝请求
         if (this.logManager.getTerm(lastCommittedIndex) != this.currTerm) {
             // Reject read only request when this leader has not committed any log entry at its term
             closure
@@ -1570,6 +1589,7 @@ public class NodeImpl implements Node, RaftServerService {
         }
         respBuilder.setIndex(lastCommittedIndex);
 
+        // 如果是follower发来的ReadIndexRequest，如果follower不在当前raft集群内，响应失败
         if (request.getPeerId() != null) {
             // request from follower or learner, check if the follower/learner is in current conf.
             final PeerId peer = new PeerId();
@@ -1582,6 +1602,7 @@ public class NodeImpl implements Node, RaftServerService {
         }
 
         ReadOnlyOption readOnlyOpt = this.raftOptions.getReadOnlyOptions();
+        // 如果ReadOnlyLeaseBased，但是leader不在有效期内，降级为普通readIndex请求，默认ReadOnlySafe
         if (readOnlyOpt == ReadOnlyOption.ReadOnlyLeaseBased && !isLeaderLeaseValid()) {
             // If leader lease timeout, we must change option to ReadOnlySafe
             readOnlyOpt = ReadOnlyOption.ReadOnlySafe;
@@ -1594,10 +1615,12 @@ public class NodeImpl implements Node, RaftServerService {
                 final ReadIndexHeartbeatResponseClosure heartbeatDone = new ReadIndexHeartbeatResponseClosure(closure,
                     respBuilder, quorum, peers.size());
                 // Send heartbeat requests to followers
+                // 向其他follower发送心跳，确认自己任然是leader
                 for (final PeerId peer : peers) {
                     if (peer.equals(this.serverId)) {
                         continue;
                     }
+                    //心跳请求响应回调ReadIndexHeartbeatResponseClosure，这是第四个回调，当leader收到大部分follower响应心跳后，认为自己仍然是leader，执行第三个回调的run方法
                     this.replicatorGroup.sendHeartbeat(peer, heartbeatDone);
                 }
                 break;
@@ -1740,7 +1763,15 @@ public class NodeImpl implements Node, RaftServerService {
         return checkLeaderLease(monotonicNowMs);
     }
 
+
+    /**
+     * 针对一致性读，有ReadIndex和LeaseRead两种可选方案，默认使用ReadIndex方案。
+     *  1、ReadIndex（ReadOnlySafe）：需要向其他Follower发送心跳，确认当前节点任然是leader；
+     *  2、LeaseRead（ReadOnlyLeaseBased）：为了减少发送心跳rpc请求的次数，每次leader向follower发送心跳，会更新一个时间戳，如果这个读请求在心跳超时时间之内，可以认为当前节点仍然是leader。
+
+     */
     private boolean checkLeaderLease(final long monotonicNowMs) {
+        // 当前时间 - 上次心跳时间 < 心跳超时时间 * 0.9 = 0.9s
         return monotonicNowMs - this.lastLeaderTimestamp < this.options.getLeaderLeaseTimeoutMs();
     }
 
@@ -1987,6 +2018,7 @@ public class NodeImpl implements Node, RaftServerService {
                 doUnlock = false;
                 this.writeLock.unlock();
                 // see the comments at FollowerStableClosure#run()
+                // 一个心跳请求或探测请求
                 this.ballotBox.setLastCommittedIndex(Math.min(request.getCommittedIndex(), prevLogIndex));
                 return respBuilder.build();
             }

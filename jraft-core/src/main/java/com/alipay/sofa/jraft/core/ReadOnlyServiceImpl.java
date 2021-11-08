@@ -118,6 +118,8 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         private final List<ReadIndexEvent> events = new ArrayList<>(
                                                       ReadOnlyServiceImpl.this.raftOptions.getApplyBatch());
 
+
+        //处理ReadIndexEvent事件
         @Override
         public void onEvent(final ReadIndexEvent newEvent, final long sequence, final boolean endOfBatch)
                                                                                                          throws Exception {
@@ -130,6 +132,7 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
 
             this.events.add(newEvent);
             if (this.events.size() >= ReadOnlyServiceImpl.this.raftOptions.getApplyBatch() || endOfBatch) {
+                //构造ReadIndexRequest，交给Node处理
                 executeReadIndexEvents(this.events);
                 reset();
             }
@@ -160,10 +163,11 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         }
 
         /**
-         * Called when ReadIndex response returns.
+         * 当一致性读返回时，客户端节点处理回调状态
          */
         @Override
         public void run(final Status status) {
+            // 1. 如果失败，响应读失败
             if (!status.isOk()) {
                 notifyFail(status);
                 return;
@@ -173,7 +177,7 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
                 notifyFail(new Status(-1, "Fail to run ReadIndex task, maybe the leader stepped down."));
                 return;
             }
-            // Success
+            // 2. 设置ReadIndexStatus
             final ReadIndexStatus readIndexStatus = new ReadIndexStatus(this.states, this.request,
                 readIndexResponse.getIndex());
             for (final ReadIndexState state : this.states) {
@@ -184,12 +188,14 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
             boolean doUnlock = true;
             ReadOnlyServiceImpl.this.lock.lock();
             try {
+                // 3. 如果当前节点的applyIndex大于等于ReadIndexResponse的current commit index，执行用户的Closure回调，可以读取当前节点状态机中的数据
                 if (readIndexStatus.isApplied(ReadOnlyServiceImpl.this.fsmCaller.getLastAppliedIndex())) {
                     // Already applied, notify readIndex request.
                     ReadOnlyServiceImpl.this.lock.unlock();
                     doUnlock = false;
                     notifySuccess(readIndexStatus);
                 } else {
+                    // 4. 如果applyIndex小于current commit index，放入队列，等待applyIndex
                     // Not applied, add it to pending-notify cache.
                     ReadOnlyServiceImpl.this.pendingNotifyStatus
                         .computeIfAbsent(readIndexStatus.getIndex(), k -> new ArrayList<>(10)) //
@@ -219,6 +225,7 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         if (events.isEmpty()) {
             return;
         }
+        // 构造ReadIndex请求
         final ReadIndexRequest.Builder rb = ReadIndexRequest.newBuilder() //
             .setGroupId(this.node.getGroupId()) //
             .setServerId(this.node.getServerId().toString());
@@ -230,7 +237,7 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
             states.add(new ReadIndexState(event.requestContext, event.done, event.startTime));
         }
         final ReadIndexRequest request = rb.build();
-
+        //构造ReadIndexRequest，交给Node处理,注意这里封装了第三层Closure---ReadIndexResponseClosure
         this.node.handleReadIndexRequest(request, new ReadIndexResponseClosure(states, request));
     }
 
@@ -309,6 +316,7 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         this.scheduledExecutorService.awaitTermination(5, TimeUnit.SECONDS);
     }
 
+    //ReadOnlyServiceImpl发布ReadIndexEvent事件，由内部类ReadIndexEventHandler处理。 至此readIndex方法返回，剩下的交给ReadIndexEvent事件处理器处理
     @Override
     public void addRequest(final byte[] reqCtx, final ReadIndexClosure closure) {
         if (this.shutdownLatch != null) {
@@ -324,8 +332,11 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
             int retryTimes = 0;
             while (true) {
                 if (this.readIndexQueue.tryPublishEvent(translator)) {
+                    //发布时间成功 退出循环
+                    //ReadIndexEventHandler处理ReadIndexEvent事件
                     break;
                 } else {
+                    //重试
                     retryTimes++;
                     if (retryTimes > MAX_ADD_REQUEST_RETRY_TIMES) {
                         Utils.runClosureInThread(closure,

@@ -319,11 +319,13 @@ public class LogManagerImpl implements LogManager {
             }
             if (!entries.isEmpty()) {
                 done.setFirstLogIndex(entries.get(0).getId().getIndex());
+                // 1. Log批量写入内存
                 this.logsInMemory.addAll(entries);
             }
             done.setEntries(entries);
 
             int retryTimes = 0;
+            // 2. 提交StableClosureEvent事件【注意done=LeaderStableClosure】
             final EventTranslator<StableClosureEvent> translator = (event, sequence) -> {
                 event.reset();
                 event.type = EventType.OTHER;
@@ -331,8 +333,11 @@ public class LogManagerImpl implements LogManager {
             };
             while (true) {
                 if (tryOfferEvent(done, translator)) {
+                    //事件添加到队列成功，退出循环
+                    //StableClosureEventHandler处理StableClosureEvent类型的数据
                     break;
                 } else {
+                    //重试
                     retryTimes++;
                     if (retryTimes > APPEND_LOG_RETRY_TIMES) {
                         reportError(RaftError.EBUSY.getNumber(), "LogManager is busy, disk queue overload.");
@@ -454,8 +459,12 @@ public class LogManagerImpl implements LogManager {
             this.lastId = lastId;
         }
 
+        /**
+         * 将log写入底层存储并触发Closure回调，这里会触发的是LeaderStableClosure。
+         */
         LogId flush() {
             if (this.size > 0) {
+                // 1. log写入底层存储
                 this.lastId = appendToStorage(this.toAppend);
                 for (int i = 0; i < this.size; i++) {
                     this.storage.get(i).getEntries().clear();
@@ -466,6 +475,10 @@ public class LogManagerImpl implements LogManager {
                         } else {
                             st = Status.OK();
                         }
+                        /**
+                         * 触发回调
+                         * NodeImpl.LeaderStableClosure#run()
+                         */
                         this.storage.get(i).run(st);
                     } catch (Throwable t) {
                         LOG.error("Fail to run closure with status: {}.", st, t);
@@ -499,6 +512,9 @@ public class LogManagerImpl implements LogManager {
         AppendBatcher       ab      = new AppendBatcher(this.storage, 256, new ArrayList<>(),
                                         LogManagerImpl.this.diskId);
 
+        /**
+         * 处理StableClosureEvent事件
+         */
         @Override
         public void onEvent(final StableClosureEvent event, final long sequence, final boolean endOfBatch)
                                                                                                           throws Exception {
@@ -566,6 +582,7 @@ public class LogManagerImpl implements LogManager {
                 }
             }
             if (endOfBatch) {
+                // 将log写入磁盘并触发done回调
                 this.lastId = this.ab.flush();
                 setDiskId(this.lastId);
             }

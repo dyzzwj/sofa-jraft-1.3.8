@@ -54,25 +54,38 @@ public class CounterServiceImpl implements CounterService {
 
     @Override
     public void get(final boolean readOnlySafe, final CounterClosure closure) {
+        // readOnlySafe = false，不走一致性读逻辑，直接返回当前节点的statemachine中的值
         if(!readOnlySafe){
             closure.success(getValue());
             closure.run(Status.OK());
             return;
         }
+        // readOnlySafe = true，走一致性读逻辑
 
+        /**
+         * 针对一致性读，有ReadIndex和LeaseRead两种可选方案，默认使用ReadIndex方案。
+         *  1、ReadIndex（ReadOnlySafe）：需要向其他Follower发送心跳，确认当前节点任然是leader；
+         *  2、LeaseRead（ReadOnlyLeaseBased）：为了减少发送心跳rpc请求的次数，每次leader向follower发送心跳，会更新一个时间戳，如果这个读请求在心跳超时时间之内，可以认为当前节点仍然是leader。
+
+         */
+        //当readIndex执行完成后，执行用户的ReadIndexClosure回调。
         this.counterServer.getNode().readIndex(BytesUtil.EMPTY_BYTES, new ReadIndexClosure() {
             @Override
             public void run(Status status, long index, byte[] reqCtx) {
+                // 保证readIndex(commitIndex) <= applyIndex后，获取状态机中的值
                 if(status.isOk()){
                     closure.success(getValue());
                     closure.run(Status.OK());
                     return;
                 }
+                // 失败处理
                 CounterServiceImpl.this.readIndexExecutor.execute(() -> {
                     if(isLeader()){
                         LOG.debug("Fail to get value with 'ReadIndex': {}, try to applying to the state machine.", status);
+                        // 如果当前节点是Leader，提交task到Raft集群，如果成功了，会回调CounterStateMachine的onApply方法响应
                         applyOperation(CounterOperation.createGet(), closure);
                     }else {
+                        // 如果当前节点不是Leader，响应失败
                         handlerNotLeaderError(closure);
                     }
                 });
@@ -84,6 +97,7 @@ public class CounterServiceImpl implements CounterService {
         return this.counterServer.getFsm().isLeader();
     }
 
+    // 获取CounterStateMachine中的value
     private long getValue() {
         return this.counterServer.getFsm().getValue();
     }

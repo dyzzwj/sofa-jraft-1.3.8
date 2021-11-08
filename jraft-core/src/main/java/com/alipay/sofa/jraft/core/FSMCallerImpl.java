@@ -143,6 +143,9 @@ public class FSMCallerImpl implements FSMCaller {
         // max committed index in current batch, reset to -1 every batch
         private long maxCommittedIndex = -1;
 
+        /**
+         * 处理处理ApplyTask事件。
+         */
         @Override
         public void onEvent(final ApplyTask event, final long sequence, final boolean endOfBatch) throws Exception {
             this.maxCommittedIndex = runApplyTask(event, this.maxCommittedIndex, endOfBatch);
@@ -242,6 +245,7 @@ public class FSMCallerImpl implements FSMCaller {
 
     @Override
     public boolean onCommitted(final long committedIndex) {
+        //提交一个ApplyTask事件，类型是COMMITTED。 ApplyTaskHandler处理ApplyTask事件。
         return enqueueTask((task, sequence) -> {
             task.type = TaskType.COMMITTED;
             task.committedIndex = committedIndex;
@@ -378,6 +382,11 @@ public class FSMCallerImpl implements FSMCaller {
         } else {
             if (maxCommittedIndex >= 0) {
                 this.currTask = TaskType.COMMITTED;
+                //
+                /**
+                 * 调用用户StateMachine的onApply方法
+                 * 将原先存储的用户提交的Task里的Closure done，放入IteratorImpl，再循环迭代器调用用户StateMachine的onApply方法，由用户代码执行done0最外层回调。
+                 */
                 doCommitted(maxCommittedIndex);
                 maxCommittedIndex = -1L; // reset maxCommittedIndex
             }
@@ -464,8 +473,13 @@ public class FSMCallerImpl implements FSMCaller {
         for (final LastAppliedLogIndexListener listener : this.lastAppliedLogIndexListeners) {
             listener.onApplied(lastAppliedIndex);
         }
+
     }
 
+    /**
+     * 将原先存储的用户提交的Task里的Closure done，放入IteratorImpl，
+     * 再循环迭代器调用用户StateMachine的onApply方法，由用户代码执行done0最外层回调。
+     */
     private void doCommitted(final long committedIndex) {
         if (!this.error.getStatus().isOk()) {
             return;
@@ -479,6 +493,7 @@ public class FSMCallerImpl implements FSMCaller {
         try {
             final List<Closure> closures = new ArrayList<>();
             final List<TaskClosure> taskClosures = new ArrayList<>();
+            // 这里会将done0（用户代码最初Task里的done），放入closures
             final long firstClosureIndex = this.closureQueue.popClosureUntil(committedIndex, closures, taskClosures);
 
             // Calls TaskClosure#onCommitted if necessary
@@ -507,6 +522,7 @@ public class FSMCallerImpl implements FSMCaller {
                 }
 
                 // Apply data task to user state machine
+                // 调用用户StateMachine的onApply方法
                 doApplyTasks(iterImpl);
             }
 
@@ -538,6 +554,7 @@ public class FSMCallerImpl implements FSMCaller {
         final long startApplyMs = Utils.monotonicMs();
         final long startIndex = iter.getIndex();
         try {
+            // 调用用户StateMachine的onApply方法
             this.fsm.onApply(iter);
         } finally {
             this.nodeMetrics.recordLatency("fsm-apply-tasks", Utils.monotonicMs() - startApplyMs);

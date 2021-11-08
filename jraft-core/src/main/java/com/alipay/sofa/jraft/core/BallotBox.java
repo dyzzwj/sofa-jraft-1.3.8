@@ -90,8 +90,8 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
     }
 
     /**
-     * Called by leader, otherwise the behavior is undefined
-     * Set logs in [first_log_index, last_log_index] are stable at |peer|.
+     * // 场景1：leader自己的log commit完成了
+     * // 场景2：replicator follower log commit完成了
      */
     public boolean commitAt(final long firstLogIndex, final long lastLogIndex, final PeerId peer) {
         // TODO  use lock-free algorithm here?
@@ -114,10 +114,12 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
             for (long logIndex = startAt; logIndex <= lastLogIndex; logIndex++) {
                 final Ballot bl = this.pendingMetaQueue.get((int) (logIndex - this.pendingIndex));
                 hint = bl.grant(peer, hint);
+                // 当半数以上节点commit，这里lastCommittedIndex赋值为logIndex
                 if (bl.isGranted()) {
                     lastCommittedIndex = logIndex;
                 }
             }
+            // 如果没有过半节点commit，这里会直接返回
             if (lastCommittedIndex == 0) {
                 return true;
             }
@@ -134,6 +136,10 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
         } finally {
             this.stampedLock.unlockWrite(stamp);
         }
+        /**
+         * 如果有过半节点commit，FSMCaller.onCommitted
+         *
+         */
         this.waiter.onCommitted(lastCommittedIndex);
         return true;
     }
@@ -238,6 +244,7 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
                 this.lastCommittedIndex = lastCommittedIndex;
                 this.stampedLock.unlockWrite(stamp);
                 doUnlock = false;
+                // 这里会提交ApplyTask，和Leader的处理一样，最终会调用用户的StateMachine的onApply方法
                 this.waiter.onCommitted(lastCommittedIndex);
             }
         } finally {
