@@ -322,6 +322,10 @@ public class LogManagerImpl implements LogManager {
                 // 1. Log批量写入内存
                 this.logsInMemory.addAll(entries);
             }
+            /**
+             *   至此，leader将数据写入了logsInMemory，follower可以从leader同步数据了（Replicator.sendEntries(long)）
+             *   后面 leader会进行commit操作（leader也是过半机制中的一个）
+             */
             done.setEntries(entries);
 
             int retryTimes = 0;

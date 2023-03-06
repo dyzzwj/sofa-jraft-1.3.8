@@ -64,6 +64,14 @@ public class CounterServer {
         FileUtils.forceMkdir(new File(dataPath));
 
         // 这里让 raft RPC 和业务 RPC 使用同一个 RPC server, 通常也可以分开
+        /**
+         * RpcServer：通过jraft提供的RaftRpcServerFactory创建一个Rpc服务Server，这个工厂是根据Sofa自己的SPI机制加载的，
+         * 正常实现是BoltRaftRpcFactory，内部用的是sofa-bolt提供的Rpc服务。
+         *
+         * Raft通讯和业务通讯，使用同一个RpcServer，如当前CountServer。
+         * Raft通讯使用JRaft提供的RpcServer，业务Server使用SpringBoot开发HttpServer，如Nacos。
+         *
+         */
         final RpcServer rpcServer = RaftRpcServerFactory.createRaftRpcServer(serverId.getEndpoint());
         // 注册业务处理器
         CounterService counterService = new CounterServiceImpl(this);

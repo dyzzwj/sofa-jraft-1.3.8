@@ -113,6 +113,7 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
             Ballot.PosHint hint = new Ballot.PosHint();
             for (long logIndex = startAt; logIndex <= lastLogIndex; logIndex++) {
                 final Ballot bl = this.pendingMetaQueue.get((int) (logIndex - this.pendingIndex));
+                //统计该投票是否过半
                 hint = bl.grant(peer, hint);
                 // 当半数以上节点commit，这里lastCommittedIndex赋值为logIndex
                 if (bl.isGranted()) {
@@ -202,6 +203,7 @@ public class BallotBox implements Lifecycle<BallotBoxOptions>, Describer {
      */
     public boolean appendPendingTask(final Configuration conf, final Configuration oldConf, final Closure done) {
         final Ballot bl = new Ballot();
+        //初始化投票箱 设定过半机制
         if (!bl.init(conf, oldConf)) {
             LOG.error("Fail to init ballot.");
             return false;

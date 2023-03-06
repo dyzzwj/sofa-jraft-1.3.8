@@ -71,6 +71,7 @@ public class Ballot {
             }
         }
 
+        //过半机制
         this.quorum = this.peers.size() / 2 + 1;
         if (oldConf == null) {
             return true;

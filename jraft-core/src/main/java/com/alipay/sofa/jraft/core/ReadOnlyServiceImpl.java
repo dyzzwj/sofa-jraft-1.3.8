@@ -124,6 +124,7 @@ public class ReadOnlyServiceImpl implements ReadOnlyService, LastAppliedLogIndex
         public void onEvent(final ReadIndexEvent newEvent, final long sequence, final boolean endOfBatch)
                                                                                                          throws Exception {
             if (newEvent.shutdownLatch != null) {
+                //一次可以处理多个读请求
                 executeReadIndexEvents(this.events);
                 reset();
                 newEvent.shutdownLatch.countDown();

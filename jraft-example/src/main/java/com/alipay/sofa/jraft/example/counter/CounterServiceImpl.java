@@ -69,6 +69,7 @@ public class CounterServiceImpl implements CounterService {
 
          */
         //当readIndex执行完成后，执行用户的ReadIndexClosure回调。
+        //com.alipay.sofa.jraft.core.NodeImpl.readIndex
         this.counterServer.getNode().readIndex(BytesUtil.EMPTY_BYTES, new ReadIndexClosure() {
             @Override
             public void run(Status status, long index, byte[] reqCtx) {

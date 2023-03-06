@@ -91,7 +91,6 @@ public class CounterStateMachine extends StateMachineAdapter {
                 counterOperation = closure.getCounterOperation();
             } else {
                 // iter.done == null 代表当前节点是follower，需要反序列化请求报文
-                // Have to parse FetchAddRequest from this user log.
                 final ByteBuffer data = iter.getData();
                 try {
                     counterOperation = SerializerManager.getSerializer(SerializerManager.Hessian2).deserialize(

@@ -382,7 +382,7 @@ public class FSMCallerImpl implements FSMCaller {
         } else {
             if (maxCommittedIndex >= 0) {
                 this.currTask = TaskType.COMMITTED;
-                //
+
                 /**
                  * 调用用户StateMachine的onApply方法
                  * 将原先存储的用户提交的Task里的Closure done，放入IteratorImpl，再循环迭代器调用用户StateMachine的onApply方法，由用户代码执行done0最外层回调。

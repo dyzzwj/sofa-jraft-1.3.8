@@ -1497,6 +1497,7 @@ public class Replicator implements ThreadId.OnError {
         }
         final int entriesSize = request.getEntriesCount();
         if (entriesSize > 0) {
+            //leader已经投过了
             if (r.options.getReplicatorType().isFollower()) {
                 // Only commit index when the response is from follower.
                 // leader继续调用投票箱的commitAt方法

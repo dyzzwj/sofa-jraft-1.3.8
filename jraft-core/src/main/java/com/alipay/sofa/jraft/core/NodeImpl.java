@@ -1384,6 +1384,7 @@ public class NodeImpl implements Node, RaftServerService {
                 return;
             }
             final List<LogEntry> entries = new ArrayList<>(size);
+            //是leader
             for (int i = 0; i < size; i++) {
                 final LogEntryAndClosure task = tasks.get(i);
                 // 2. 如果期望任期不等于当前leader任期，返回失败
@@ -1446,6 +1447,7 @@ public class NodeImpl implements Node, RaftServerService {
             throw new IllegalStateException("Node is shutting down");
         }
         Requires.requireNonNull(done, "Null closure");
+        //继续
         this.readOnlyService.addRequest(requestContext, done);
     }
 
@@ -1497,6 +1499,7 @@ public class NodeImpl implements Node, RaftServerService {
             if (this.ackSuccess + 1 >= this.quorum) {
                 this.respBuilder.setSuccess(true);
                 this.closure.setResponse(this.respBuilder.build());
+                //ReadIndexResponseClosure
                 this.closure.run(Status.OK());
                 this.isDone = true;
             } else if (this.ackFailures >= this.failPeersThreshold) {
@@ -1564,6 +1567,7 @@ public class NodeImpl implements Node, RaftServerService {
 
     private void readLeader(final ReadIndexRequest request, final ReadIndexResponse.Builder respBuilder,
                             final RpcResponseClosure<ReadIndexResponse> closure) {
+        //过半节点数量
         final int quorum = getQuorum();
         // 如果只有一个节点，直接响应成功
         if (quorum <= 1) {
@@ -1602,7 +1606,13 @@ public class NodeImpl implements Node, RaftServerService {
         }
 
         ReadOnlyOption readOnlyOpt = this.raftOptions.getReadOnlyOptions();
+        /**
+         * - ReadIndex（ReadOnlySafe）：需要向其他Follower发送心跳，确认当前节点任然是leader；
+         * - LeaseRead（ReadOnlyLeaseBased）：为了减少发送心跳rpc请求的次数，每次leader向follower发送心跳，会更新一个时间戳，
+         *    如果这个读请求在心跳超时时间之内，可以认为当前节点仍然是leader。
+         */
         // 如果ReadOnlyLeaseBased，但是leader不在有效期内，降级为普通readIndex请求，默认ReadOnlySafe
+        //isLeaderLeaseValid：校验心跳是否超时超时
         if (readOnlyOpt == ReadOnlyOption.ReadOnlyLeaseBased && !isLeaderLeaseValid()) {
             // If leader lease timeout, we must change option to ReadOnlySafe
             readOnlyOpt = ReadOnlyOption.ReadOnlySafe;
@@ -1628,6 +1638,7 @@ public class NodeImpl implements Node, RaftServerService {
                 // Responses to followers and local node.
                 respBuilder.setSuccess(true);
                 closure.setResponse(respBuilder.build());
+                //ReadIndexResponseClosure
                 closure.run(Status.OK());
                 break;
         }
